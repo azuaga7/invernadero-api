@@ -636,7 +636,7 @@ DASHBOARD_HTML = """
               El gráfico grande de abajo se actualiza y el pequeño del Dashboard se mantiene sincronizado.
             </p>
 
-            <div id="controlsWrapper" style="margin-top:10px; display:none;">
+            <div id="controlsWrapper" style="margin-top:10px;">
               <div class="controls-grid">
                 <div class="form-group">
                   <label class="form-label">Variable eje Y principal</label>
@@ -662,6 +662,15 @@ DASHBOARD_HTML = """
                 <div class="form-group">
                   <label class="form-label">Hasta</label>
                   <input type="datetime-local" id="toDate">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Rango rápido</label>
+                  <select id="selectRangePreset">
+                    <option value="last_day" selected>Último día</option>
+                    <option value="last_7">Últimos 7 días</option>
+                    <option value="last_30">Último mes</option>
+                    <option value="all">Todo el dataset</option>
+                  </select>
                 </div>
                 <div class="form-group">
                   <label class="form-label">Vista</label>
@@ -816,9 +825,12 @@ DASHBOARD_HTML = """
     }
 
     function setEmptyState(visible) {
-      document.getElementById("emptyState").style.display = visible ? "block" : "none";
-      document.getElementById("controlsWrapper").style.display = visible ? "none" : "block";
-      document.getElementById("chartMeta").style.display = visible ? "none" : "flex";
+      const empty = document.getElementById("emptyState");
+      const meta = document.getElementById("chartMeta");
+      if (empty) empty.style.display = visible ? "block" : "none";
+      if (meta) meta.style.display = visible ? "none" : "flex";
+      // Los controles del laboratorio de gráficos permanecen visibles siempre,
+      // aunque no haya datos todavía.
     }
 
     function accentChip(el, on) {
@@ -986,6 +998,51 @@ DASHBOARD_HTML = """
         return true;
       });
     }
+
+    function formatForDateTimeLocal(d) {
+      if (!d) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const MM = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const hh = pad(d.getHours());
+      const mm = pad(d.getMinutes());
+      return `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
+    }
+
+    function applyRangePreset(preset) {
+      const selectTime = document.getElementById("selectTime");
+      const timeCol = selectTime ? selectTime.value : null;
+      if (!globalData || !globalData.rows || !globalData.rows.length || !timeCol) return;
+
+      const rows = globalData.rows || [];
+      const times = rows
+        .map(r => parseDateFromRow(r, timeCol))
+        .filter(d => d !== null)
+        .sort((a, b) => a - b);
+
+      if (!times.length) return;
+      const last = times[times.length - 1];
+      let from;
+
+      if (preset === "last_day") {
+        from = new Date(last.getTime() - 24 * 60 * 60 * 1000);
+      } else if (preset === "last_7") {
+        from = new Date(last.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else if (preset === "last_30") {
+        from = new Date(last.getTime() - 30 * 24 * 60 * 60 * 1000);
+      } else if (preset === "all") {
+        from = times[0];
+      } else {
+        return;
+      }
+
+      const fromInput = document.getElementById("fromDate");
+      const toInput = document.getElementById("toDate");
+      if (fromInput) fromInput.value = formatForDateTimeLocal(from);
+      if (toInput) toInput.value = formatForDateTimeLocal(last);
+    }
+
 
     
     function exportXlsx() {
@@ -1919,12 +1976,19 @@ DASHBOARD_HTML = """
       const selTime = document.getElementById("selectTime");
       const from = document.getElementById("fromDate");
       const to = document.getElementById("toDate");
+      const rangePreset = document.getElementById("selectRangePreset");
 
       if (selY1) selY1.addEventListener("change", () => { updateChart(); updateTemperatureVisuals(); });
       if (selY2) selY2.addEventListener("change", updateChart);
       if (selTime) selTime.addEventListener("change", () => { updateChart(); updateTemperatureVisuals(); });
       if (from) from.addEventListener("change", () => { updateChart(); updateTemperatureVisuals(); });
       if (to) to.addEventListener("change", () => { updateChart(); updateTemperatureVisuals(); });
+
+      if (rangePreset) rangePreset.addEventListener("change", () => {
+        applyRangePreset(rangePreset.value);
+        updateChart();
+        updateTemperatureVisuals();
+      });
 
       ["fltAll","fltDay","fltNight"].forEach(id => {
         const btn = document.getElementById(id);
