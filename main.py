@@ -414,6 +414,14 @@ DASHBOARD_HTML = """
         <span id="datasetInfo">Sin archivo cargado</span>
       </div>
     </header>
+    <div id="gsmStatusBanner" class="card" style="max-width:960px;margin:8px auto 0 auto;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span id="gsmStatusDot" class="status-dot" style="width:10px;height:10px;"></span>
+        <span id="gsmStatusLabel" class="status-sub">Estado GSM: Desconocido</span>
+      </div>
+      <span id="gsmStatusDetail" class="status-sub" style="font-size:11px;">Esperando datos del ESP32...</span>
+    </div>
+
 
     <main>
       <div class="tabs">
@@ -485,11 +493,6 @@ DASHBOARD_HTML = """
                 <div class="status-item" id="statusTempCard">
                   <h3>Clima interno</h3>
                   <div class="status-value" id="statusTemp">-- °C</div>
-      <div class="status-item">
-        <h3>Horario actual</h3>
-        <div class="status-value" id="statusClock">--:--:--</div>
-        <div class="status-sub" id="statusClockDate">--</div>
-      </div>
                   <div class="status-sub" id="statusTempRange">Mín: -- °C · Máx: -- °C</div>
                   <div class="temp-bar">
                     <div class="temp-bar-fill" id="tempBarFill" style="width:0%;"></div>
@@ -874,6 +877,7 @@ DASHBOARD_HTML = """
         }
         initControls();
         updateStatusFromData();
+        updateGsmStatusFromData();
         updateChart();
         renderTable();
         renderFieldsDictionary();
@@ -1130,34 +1134,6 @@ DASHBOARD_HTML = """
         label.textContent = textIfOff || "OFF";
       }
     }
-
-    function updateClockWidget() {
-      const elTime = document.getElementById("statusClock");
-      const elDate = document.getElementById("statusClockDate");
-      if (!elTime || !elDate) return;
-
-      const now = new Date();
-
-      const hh = String(now.getHours()).padStart(2, "0");
-      const mm = String(now.getMinutes()).padStart(2, "0");
-      const ss = String(now.getSeconds()).padStart(2, "0");
-
-      elTime.textContent = `${hh}:${mm}:${ss}`;
-
-      const days = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
-      const months = [
-        "enero","febrero","marzo","abril","mayo","junio",
-        "julio","agosto","septiembre","octubre","noviembre","diciembre"
-      ];
-
-      const dayName = days[now.getDay()];
-      const dayNum = now.getDate();
-      const monthName = months[now.getMonth()];
-      const year = now.getFullYear();
-
-      elDate.textContent = `${dayName}, ${dayNum} de ${monthName} de ${year}`;
-    }
-
 
     function tempColorForValue(t) {
       if (t === null || isNaN(t)) return "#6b7280";
@@ -1544,6 +1520,57 @@ DASHBOARD_HTML = """
         if (sorted.length) lastRow = sorted[sorted.length - 1];
       }
 
+
+    function updateGsmStatusFromData() {
+      const banner = document.getElementById("gsmStatusBanner");
+      const dot = document.getElementById("gsmStatusDot");
+      const label = document.getElementById("gsmStatusLabel");
+      const detail = document.getElementById("gsmStatusDetail");
+
+      if (!banner || !window.globalData || !globalData.rows || !globalData.rows.length) {
+        if (label) label.textContent = "Estado GSM: OFFLINE";
+        if (detail) detail.textContent = "Sin datos recientes del ESP32.";
+        if (dot) dot.style.background = "var(--danger)";
+        return;
+      }
+
+      const rows = globalData.rows;
+      const cols = globalData.columns || [];
+      const timeCols = globalData.datetimeColumns || [];
+      const timeCol = timeCols.includes("timestamp") ? "timestamp" : (timeCols[0] || null);
+
+      if (!timeCol) {
+        if (label) label.textContent = "Estado GSM: Desconocido";
+        if (detail) detail.textContent = "No se encontró columna de tiempo.";
+        if (dot) dot.style.background = "var(--warn)";
+        return;
+      }
+
+      let lastRow = rows[rows.length - 1];
+      const tsRaw = lastRow[timeCol];
+      if (!tsRaw) {
+        if (label) label.textContent = "Estado GSM: Desconocido";
+        if (detail) detail.textContent = "Último registro sin timestamp.";
+        if (dot) dot.style.background = "var(--warn)";
+        return;
+      }
+
+      const lastDate = new Date(tsRaw);
+      const now = new Date();
+      const diffMs = now - lastDate;
+      const diffMin = diffMs / 60000;
+
+      if (diffMin <= 5) {
+        if (label) label.textContent = "Estado GSM: ONLINE";
+        if (detail) detail.textContent = "Último dato recibido hace " + diffMin.toFixed(1) + " min.";
+        if (dot) dot.style.background = "var(--success)";
+      } else {
+        if (label) label.textContent = "Estado GSM: OFFLINE";
+        if (detail) detail.textContent = "Último dato recibido hace " + diffMin.toFixed(1) + " min.";
+        if (dot) dot.style.background = "var(--danger)";
+      }
+    }
+
       const tempCol = cols.find(c => ["temp_invernadero_C", "tempC", "temperatura"].includes(c));
       const modeCol = cols.find(c => ["modo_control", "modo", "controlMode"].includes(c));
       const stationCol = cols.find(c => ["estacion", "estación"].includes(c));
@@ -1878,8 +1905,6 @@ DASHBOARD_HTML = """
     }
 
     document.addEventListener("DOMContentLoaded", () => {
-      updateClockWidget();
-      setInterval(updateClockWidget, 1000);
       document.getElementById("btnUpload").addEventListener("click", uploadFile);
       document.getElementById("btnReset").addEventListener("click", resetFilters);
 
