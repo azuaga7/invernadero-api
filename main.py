@@ -122,7 +122,7 @@ async def api_ingreso(lectura: Lectura):
             vfd_freq_out_Hz, vfd_volt_out_V, vfd_curr_out_A,
             pump_on, pump_auto_mode
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        "",
+        """,
         (
             lectura.timestamp,
             lectura.dia_semana,
@@ -149,72 +149,6 @@ async def api_ingreso(lectura: Lectura):
     conn.close()
     return {"status": "ok"}
 
-
-@app.get("/api/data")
-async def api_data(limit: int = 500):
-    """
-    Devuelve las últimas N filas para gráficos/histórico.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM lecturas ORDER BY id DESC LIMIT ?",
-        (limit,),
-    )
-    rows = cur.fetchall()
-    cols = [c[1] for c in cur.description]  # saltar id
-    conn.close()
-
-    data: List[Dict[str, Any]] = []
-    for r in rows:
-        rec = {}
-        for i, col in enumerate(cols, start=1):
-            rec[col] = r[i]
-        data.append(rec)
-
-    return {"rows": data, "columns": cols}
-
-
-@app.get("/api/last")
-async def api_last():
-    """
-    Último registro para mostrar estado actual grande.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM lecturas ORDER BY id DESC LIMIT 1")
-    row = cur.fetchone()
-    cols = [c[1] for c in cur.description]  # saltar id
-    conn.close()
-
-    if not row:
-        return JSONResponse({"detail": "No hay datos aún"}, status_code=404)
-
-    rec = {}
-    for i, col in enumerate(cols, start=1):
-        rec[col] = row[i]
-    return rec
-
-
-@app.get("/api/control_state")
-async def get_control_state():
-    """
-    Estado actual de modos/órdenes remotas (pared, colgantes, bomba).
-    """
-    return control_state
-
-
-@app.post("/api/control_state")
-async def update_control_state(update: ControlUpdate):
-    """
-    Actualiza los flags de control remoto.
-    Sólo campos presentes en el body se modifican.
-    """
-    upd = update.dict(exclude_unset=True)
-    for k, v in upd.items():
-        if k in control_state and isinstance(v, bool):
-            control_state[k] = v
-    return control_state
 
 
 # ===================== HTML DASHBOARD =====================
