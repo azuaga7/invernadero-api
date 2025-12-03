@@ -485,6 +485,11 @@ DASHBOARD_HTML = """
                 <div class="status-item" id="statusTempCard">
                   <h3>Clima interno</h3>
                   <div class="status-value" id="statusTemp">-- °C</div>
+      <div class="status-item">
+        <h3>Horario actual</h3>
+        <div class="status-value" id="statusClock">--:--:--</div>
+        <div class="status-sub" id="statusClockDate">--</div>
+      </div>
                   <div class="status-sub" id="statusTempRange">Mín: -- °C · Máx: -- °C</div>
                   <div class="temp-bar">
                     <div class="temp-bar-fill" id="tempBarFill" style="width:0%;"></div>
@@ -1125,6 +1130,34 @@ DASHBOARD_HTML = """
         label.textContent = textIfOff || "OFF";
       }
     }
+
+    function updateClockWidget() {
+      const elTime = document.getElementById("statusClock");
+      const elDate = document.getElementById("statusClockDate");
+      if (!elTime || !elDate) return;
+
+      const now = new Date();
+
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+
+      elTime.textContent = `${hh}:${mm}:${ss}`;
+
+      const days = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+      const months = [
+        "enero","febrero","marzo","abril","mayo","junio",
+        "julio","agosto","septiembre","octubre","noviembre","diciembre"
+      ];
+
+      const dayName = days[now.getDay()];
+      const dayNum = now.getDate();
+      const monthName = months[now.getMonth()];
+      const year = now.getFullYear();
+
+      elDate.textContent = `${dayName}, ${dayNum} de ${monthName} de ${year}`;
+    }
+
 
     function tempColorForValue(t) {
       if (t === null || isNaN(t)) return "#6b7280";
@@ -1845,6 +1878,8 @@ DASHBOARD_HTML = """
     }
 
     document.addEventListener("DOMContentLoaded", () => {
+      updateClockWidget();
+      setInterval(updateClockWidget, 1000);
       document.getElementById("btnUpload").addEventListener("click", uploadFile);
       document.getElementById("btnReset").addEventListener("click", resetFilters);
 
@@ -2089,5 +2124,4 @@ async def update_control_state(update: ControlUpdate):
         if k in CONTROL_STATE and isinstance(v, bool):
             CONTROL_STATE[k] = v
     return CONTROL_STATE
-
 
