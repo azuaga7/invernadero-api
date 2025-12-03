@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from io import BytesIO
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 
 app = FastAPI(title="Dashboard Invernadero ADTEC")
 
@@ -22,10 +24,10 @@ KNOWN_FIELD_DESCRIPTIONS = {
     "modo_control": "Modo en que está trabajando el invernadero (automático o manual estacional).",
     "estacion": "Estación climática lógica que usa el controlador (verano/invierno).",
     "temp_invernadero_C": "Temperatura medida dentro del invernadero (sensor DS18B20).",
-    "hum_invernadero_rel": "Humedad relativa (%) dentro del invernadero medida por el DHT22.",
+    "hum_invernadero_rel": "Humedad relativa (%) dentro del invernadero medida por el sensor de humedad.",
     "freq_ref_Hz": "Frecuencia objetivo calculada a partir de temperatura y estación.",
     "freq_cmd_Hz": "Frecuencia efectivamente enviada al variador de frecuencia.",
-    "colg_ref_unidades": "Cantidad objetivo de ventiladores colgantes que el sistema desea activar (en ventiladores equivalentes).",
+    "colg_ref_unidades": "Cantidad objetivo de ventiladores colgantes que el sistema desea activar.",
     "n_colg_vent_on": "Número real de ventiladores colgantes activados.",
     "relay_pared_on": "Estado del relé que alimenta los ventiladores de pared.",
     "relay_colg_1_on": "Estado del primer relé de ventiladores colgantes (banco 1).",
@@ -36,7 +38,7 @@ KNOWN_FIELD_DESCRIPTIONS = {
     "vfd_volt_out_V": "Tensión de salida aproximada del variador (V).",
     "vfd_curr_out_A": "Corriente de salida aproximada del variador (A).",
     "pump_on": "Estado actual de la bomba / nebulización (1 = encendida, 0 = apagada).",
-    "pump_auto_mode": "Modo de la bomba: 1 = automático según T y HR, 0 = forzada por control remoto.",
+    "pump_auto_mode": "Modo de la bomba: 1 = automático según condiciones, 0 = forzada por control remoto.",
 }
 
 def prettify_column_name(col: str) -> str:
@@ -55,6 +57,7 @@ DASHBOARD_HTML = """
   <meta charset="UTF-8">
   <title>ADTEC · Dashboard Invernadero</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     :root {
       --bg-color: #05070a;
@@ -423,6 +426,9 @@ DASHBOARD_HTML = """
         <button class="tab" data-tab="table">
           <span class="tab-dot"></span>Tabla de datos
         </button>
+        <button class="tab" data-tab="control">
+          <span class="tab-dot"></span>Control
+        </button>
         <button class="tab" data-tab="fields">
           <span class="tab-dot"></span>Diccionario de campos
         </button>
@@ -566,7 +572,45 @@ DASHBOARD_HTML = """
               </div>
               <!-- FIN NUEVOS WIDGETS -->
 
-            </div>
+            
+                <div class="status-item" id="statusHumCard">
+                  <h3>Humedad interna</h3>
+                  <div class="status-value" id="statusHum">-- %</div>
+                  <div class="status-sub" id="statusHumRange">Mín: -- % · Máx: -- %</div>
+                  <div class="temp-bar">
+                    <div class="temp-bar-fill" id="humBarFill" style="width:0%;"></div>
+                  </div>
+                </div>
+
+                <div class="status-item">
+                  <h3>Bomba / nebulización</h3>
+                  <div class="status-value" id="statusPump">--</div>
+                  <div class="status-chip" id="chipPump">
+                    <span class="status-dot" id="dotPump"></span>
+                    <span id="labelPump">OFF</span>
+                  </div>
+                </div>
+
+                <div class="status-item">
+                  <h3>Clima exterior</h3>
+                  <div class="status-sub">Benjamín Aceval · Cerrito, Paraguay</div>
+                  <div style="margin-top:8px;">
+                    <a class="weatherwidget-io"
+                       href="https://forecast7.com/en/n25d04n57d37/asuncion/"
+                       data-label_1="BENJAMÍN ACEVAL"
+                       data-label_2="CERRITO · PY"
+                       data-theme="dark"
+                       data-basecolor="#020617"
+                       data-textcolor="#e5e7eb"
+                       data-highcolor="#fbbf24"
+                       data-lowcolor="#38bdf8"
+                       data-suncolor="#fbbf24"
+                       data-mooncolor="#38bdf8">
+                      BENJAMÍN ACEVAL CERRITO · PY
+                    </a>
+                  </div>
+                </div>
+</div>
           </section>
         </div>
       </div>
@@ -614,6 +658,11 @@ DASHBOARD_HTML = """
                 <div class="form-group">
                   <label class="form-label">Vista</label>
                   <div class="chip-toggle-group">
+
+                <div class="form-group">
+                  <label class="form-label">Exportar</label>
+                  <button class="btn" id="btnExportXlsx" type="button">⬇ Exportar XLSX</button>
+                </div>
                     <button class="chip-toggle active" data-filter="all" id="fltAll">
                       <span class="chip-toggle-dot"></span>Todo el día
                     </button>
@@ -650,7 +699,72 @@ DASHBOARD_HTML = """
         </section>
       </div>
 
-      <!-- TAB CAMPOS -->
+      
+      <!-- TAB CONTROL -->
+      <div class="tab-panel" id="tab-control">
+        <section class="card">
+          <div class="card-header">
+            <div class="card-title">Control remoto de equipos</div>
+          </div>
+          <div class="card-content">
+            <p style="font-size:12px;color:var(--text-muted);margin:0 0 6px;">
+              Desde aquí puedes ver el estado actual reportado por el ESP32 y enviar órdenes manuales
+              a los relés de pared, colgantes y bomba / nebulización.
+            </p>
+
+            <div class="controls-grid" style="margin-top:10px;">
+              <div class="form-group">
+                <label class="form-label">Ventiladores pared</label>
+                <div class="status-sub" id="ctrlWallState">Estado actual: --</div>
+                <div class="chip-toggle-group" style="margin-top:6px;">
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlWallManual"> Modo manual
+                  </label>
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlWallOn"> Forzar ON
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Ventiladores colgantes</label>
+                <div class="status-sub" id="ctrlColgState">Estado actual: --</div>
+                <div class="status-sub" id="ctrlColgDetail">Cantidad objetivo / real: --</div>
+                <div class="chip-toggle-group" style="margin-top:6px;">
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlColgManual"> Modo manual
+                  </label>
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlColgOn"> Forzar ON
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Bomba / nebulización</label>
+                <div class="status-sub" id="ctrlPumpState">Estado actual: --</div>
+                <div class="chip-toggle-group" style="margin-top:6px;">
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlPumpManual"> Modo manual
+                  </label>
+                  <label class="status-sub">
+                    <input type="checkbox" id="ctrlPumpOn"> Forzar ON
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn" id="btnApplyControl">Aplicar cambios</button>
+              <span style="font-size:11px;color:var(--text-muted);" id="ctrlStatusMsg">
+                Los cambios se envían a /api/control_state y serán leídos por el ESP32 en su próximo ciclo.
+              </span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+<!-- TAB CAMPOS -->
       <div class="tab-panel" id="tab-fields">
         <section class="card">
           <div class="card-header">
@@ -668,7 +782,22 @@ DASHBOARD_HTML = """
     </main>
   </div>
 
+  
   <script>
+    (function() {
+      var d = document;
+      var id = "weatherwidget-io-js";
+      if (!d.getElementById(id)) {
+        var s = d.createElement("script");
+        s.id = id;
+        s.src = "https://weatherwidget.io/js/widget.min.js";
+        s.async = true;
+        d.head.appendChild(s);
+      }
+    })();
+  </script>
+
+<script>
     let globalData = null;
     let globalChart = null;
     let globalChartWide = null;
@@ -847,6 +976,35 @@ DASHBOARD_HTML = """
         }
         return true;
       });
+    }
+
+    
+    function exportXlsx() {
+      if (!globalData || !globalData.rows || !globalData.rows.length) {
+        alert("No hay datos para exportar.");
+        return;
+      }
+      if (typeof XLSX === "undefined") {
+        alert("La librería XLSX no está disponible en esta página.");
+        return;
+      }
+      const rows = filterRows();
+      if (!rows.length) {
+        alert("No hay filas en el rango seleccionado.");
+        return;
+      }
+      const cols = globalData.columns || [];
+      const dataForSheet = rows.map(r => {
+        const obj = {};
+        cols.forEach(c => {
+          obj[c] = r[c];
+        });
+        return obj;
+      });
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(dataForSheet);
+      XLSX.utils.book_append_sheet(wb, ws, "datos_filtrados");
+      XLSX.writeFile(wb, "invernadero_export.xlsx");
     }
 
     function buildDatasetsAndLabels() {
@@ -1289,6 +1447,50 @@ DASHBOARD_HTML = """
         modeLoadLabel.textContent =
           `Auto: ${autoHours.toFixed(1)} h · Verano man.: ${verHours.toFixed(1)} h · Invierno man.: ${invHours.toFixed(1)} h`;
       }
+
+      // HUMEDAD INTERNA (hum_invernadero_rel)
+      const humCol = cols.find(c => ["hum_invernadero_rel", "humedad", "humidity"].includes(c));
+      if (humCol) {
+        let lastHum = null;
+        const humVals = [];
+        rows.forEach(r => {
+          const raw = r[humCol];
+          if (raw === undefined || raw === null) return;
+          const v = Number(raw);
+          if (!isNaN(v)) {
+            humVals.push(v);
+            lastHum = v;
+          }
+        });
+
+        const humValueLabel = document.getElementById("statusHum");
+        const humRangeLabel = document.getElementById("statusHumRange");
+        const humBarFill = document.getElementById("humBarFill");
+
+        if (humValueLabel) {
+          humValueLabel.textContent =
+            (lastHum !== null && !isNaN(lastHum)) ? lastHum.toFixed(1) + " %" : "-- %";
+        }
+
+        if (humRangeLabel) {
+          if (humVals.length) {
+            const minH = Math.min(...humVals);
+            const maxH = Math.max(...humVals);
+            humRangeLabel.textContent =
+              `Mín: ${minH.toFixed(1)} % · Máx: ${maxH.toFixed(1)} %`;
+          } else {
+            humRangeLabel.textContent = "Mín: -- % · Máx: -- %";
+          }
+        }
+
+        if (humBarFill) {
+          let pct = (lastHum !== null && !isNaN(lastHum)) ? lastHum : 0;
+          if (pct < 0) pct = 0;
+          if (pct > 100) pct = 100;
+          humBarFill.style.width = pct + "%";
+        }
+      }
+
     }
 
     function updateStatusFromData() {
@@ -1393,6 +1595,18 @@ DASHBOARD_HTML = """
       document.getElementById("statusVfdCurr").textContent =
         (vfdCurr !== null && !isNaN(vfdCurr)) ? vfdCurr.toFixed(2) + " A" : "-- A";
 
+      // Estado de bomba / nebulización
+      const pumpCol = cols.find(c => ["pump_on"].includes(c));
+      if (pumpCol) {
+        const rawPump = lastRow[pumpCol];
+        const pumpOn = Number(rawPump) === 1 || rawPump === true;
+        const pumpLabel = document.getElementById("statusPump");
+        if (pumpLabel) {
+          pumpLabel.textContent = pumpOn ? "ON" : "OFF";
+        }
+        setOnOffChip("chipPump", "dotPump", "labelPump", pumpOn, "Encendida", "Apagada");
+      }
+
       let tsText = "--";
       if (timeCol && lastRow[timeCol]) {
         const d = new Date(lastRow[timeCol]);
@@ -1418,6 +1632,130 @@ DASHBOARD_HTML = """
 
       updateTemperatureVisuals();
       updateSummaryWidgets();
+    }
+
+
+    function updateControlStatusFromData() {
+      if (!globalData || !globalData.rows || !globalData.rows.length) return;
+      const rows = globalData.rows;
+      const cols = globalData.columns || [];
+      const timeCols = globalData.datetimeColumns || [];
+
+      const timeCol = timeCols.includes("timestamp")
+        ? "timestamp"
+        : (timeCols[0] || null);
+
+      let lastRow = rows[rows.length - 1];
+      if (timeCol) {
+        const sorted = [...rows].filter(r => r[timeCol]).sort((a, b) => {
+          return new Date(a[timeCol]) - new Date(b[timeCol]);
+        });
+        if (sorted.length) lastRow = sorted[sorted.length - 1];
+      }
+
+      const wallCol = cols.find(c => ["vent_pared_on", "relay_pared_on", "wallFansOn"].includes(c));
+      const colgStateCol = cols.find(c => ["vent_colg_on", "colgFansOn"].includes(c));
+      const colgCountCol = cols.find(c => ["n_colg_vent_on"].includes(c));
+      const colgRefCol = cols.find(c => ["colg_ref_unidades"].includes(c));
+      const pumpCol = cols.find(c => ["pump_on"].includes(c));
+      const freqCol = cols.find(c => ["freq_cmd_Hz", "vfd_freq_out_Hz"].includes(c));
+
+      const wallStateLabel = document.getElementById("ctrlWallState");
+      if (wallStateLabel) {
+        let txt = "Estado actual: --";
+        if (wallCol && lastRow[wallCol] !== undefined && lastRow[wallCol] !== null) {
+          const on = Number(lastRow[wallCol]) > 0;
+          txt = "Estado actual: " + (on ? "ON" : "OFF");
+        }
+        wallStateLabel.textContent = txt;
+      }
+
+      const colgStateLabel = document.getElementById("ctrlColgState");
+      const colgDetailLabel = document.getElementById("ctrlColgDetail");
+      if (colgStateLabel) {
+        let on = false;
+        if (colgStateCol && lastRow[colgStateCol] !== undefined && lastRow[colgStateCol] !== null) {
+          on = Number(lastRow[colgStateCol]) > 0;
+        }
+        colgStateLabel.textContent = "Estado actual: " + (on ? "ON" : "OFF");
+      }
+      if (colgDetailLabel) {
+        const ref = colgRefCol && lastRow[colgRefCol] != null ? Number(lastRow[colgRefCol]) : null;
+        const cnt = colgCountCol && lastRow[colgCountCol] != null ? Number(lastRow[colgCountCol]) : null;
+        const freq = freqCol && lastRow[freqCol] != null ? Number(lastRow[freqCol]) : null;
+        let txt = "Cantidad objetivo / real: --";
+        if (!isNaN(ref) || !isNaN(cnt)) {
+          txt = "Cantidad objetivo / real: " +
+            (isNaN(ref) ? "--" : ref.toFixed(1)) + " / " +
+            (isNaN(cnt) ? "--" : cnt.toFixed(0));
+        }
+        if (!isNaN(freq)) {
+          txt += ` · Frecuencia: ${freq.toFixed(1)} Hz`;
+        }
+        colgDetailLabel.textContent = txt;
+      }
+
+      const pumpStateLabel = document.getElementById("ctrlPumpState");
+      if (pumpStateLabel) {
+        let txt = "Estado actual: --";
+        if (pumpCol && lastRow[pumpCol] !== undefined && lastRow[pumpCol] !== null) {
+          const on = Number(lastRow[pumpCol]) > 0;
+          txt = "Estado actual: " + (on ? "ON" : "OFF");
+        }
+        pumpStateLabel.textContent = txt;
+      }
+    }
+
+    async function loadControlState() {
+      try {
+        const resp = await fetch("/api/control_state");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const map = {
+          ctrlWallManual: "wall_manual",
+          ctrlWallOn: "wall_on",
+          ctrlColgManual: "colg_manual",
+          ctrlColgOn: "colg_on",
+          ctrlPumpManual: "pump_manual",
+          ctrlPumpOn: "pump_on",
+        };
+        Object.keys(map).forEach(id => {
+          const el = document.getElementById(id);
+          if (el && typeof data[map[id]] === "boolean") {
+            el.checked = data[map[id]];
+          }
+        });
+      } catch (e) {
+        console.error("Error al cargar control_state", e);
+      }
+    }
+
+    async function applyControlState() {
+      const statusMsg = document.getElementById("ctrlStatusMsg");
+      const payload = {
+        wall_manual: document.getElementById("ctrlWallManual")?.checked || false,
+        wall_on: document.getElementById("ctrlWallOn")?.checked || false,
+        colg_manual: document.getElementById("ctrlColgManual")?.checked || false,
+        colg_on: document.getElementById("ctrlColgOn")?.checked || false,
+        pump_manual: document.getElementById("ctrlPumpManual")?.checked || false,
+        pump_on: document.getElementById("ctrlPumpOn")?.checked || false,
+      };
+      try {
+        const resp = await fetch("/api/control_state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+          if (statusMsg) statusMsg.textContent = "Error al enviar el control.";
+          return;
+        }
+        await resp.json();
+        if (statusMsg) statusMsg.textContent = "Control enviado correctamente.";
+      } catch (e) {
+        console.error("Error al aplicar control", e);
+        if (statusMsg) statusMsg.textContent = "Error de red al enviar el control.";
+      }
     }
 
     function renderTable() {
@@ -1509,6 +1847,12 @@ DASHBOARD_HTML = """
     document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("btnUpload").addEventListener("click", uploadFile);
       document.getElementById("btnReset").addEventListener("click", resetFilters);
+
+      const btnExport = document.getElementById("btnExportXlsx");
+      if (btnExport) btnExport.addEventListener("click", exportXlsx);
+      const btnApplyControl = document.getElementById("btnApplyControl");
+      if (btnApplyControl) btnApplyControl.addEventListener("click", function(e) { e.preventDefault(); applyControlState(); });
+      loadControlState();
 
       const selY1 = document.getElementById("selectY1");
       const selY2 = document.getElementById("selectY2");
@@ -1639,10 +1983,7 @@ async def get_data():
         "rows": data_rows,
     }
 
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-
-# ===================== API INTEGRADA CON ESP32 (GSM) =====================
+# ===================== API ESP32 / GSM =====================
 
 class Lectura(BaseModel):
     timestamp: str
@@ -1666,7 +2007,7 @@ class Lectura(BaseModel):
     pump_on: int
     pump_auto_mode: int
 
-# Estado in-memory para control remoto (web → ESP32)
+
 CONTROL_STATE: Dict[str, bool] = {
     "wall_manual": False,
     "wall_on": False,
@@ -1675,6 +2016,7 @@ CONTROL_STATE: Dict[str, bool] = {
     "pump_manual": False,
     "pump_on": False,
 }
+
 
 class ControlUpdate(BaseModel):
     wall_manual: Optional[bool] = None
@@ -1688,28 +2030,23 @@ class ControlUpdate(BaseModel):
 @app.post("/api/ingreso")
 async def api_ingreso(lectura: Lectura):
     """
-    Endpoint que usará el ESP32 (vía SIM800L) para enviar cada registro de telemetría.
-    Los datos se guardan en memoria dentro de LAST_DF para visualización inmediata.
+    Endpoint que usará el ESP32 (vía SIM/GSM) para enviar cada registro de telemetría.
+    Los datos se guardan en memoria en LAST_DF para visualización inmediata.
     """
     global LAST_DF
-
-    # Convertimos el modelo a un dict plano
-    rec: Dict[str, Any] = lectura.dict()
-
-    # Insertamos / concatenamos en el DataFrame in-memory
+    rec = lectura.dict()
     new_df = pd.DataFrame([rec])
     if LAST_DF is None:
         LAST_DF = new_df
     else:
         LAST_DF = pd.concat([LAST_DF, new_df], ignore_index=True)
-
     return {"status": "ok"}
 
 
 @app.get("/api/last")
 async def api_last():
     """
-    Devuelve el último registro disponible (según el DataFrame in-memory).
+    Devuelve el último registro disponible según el DataFrame in-memory LAST_DF.
     """
     global LAST_DF
     if LAST_DF is None or LAST_DF.empty:
@@ -1717,9 +2054,8 @@ async def api_last():
 
     df = LAST_DF
     last_row = df.iloc[-1]
-
-    # Reutilizamos la lógica de /api/data para serializar correctamente
     datetime_cols = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+
     record = {}
     for c in df.columns:
         val = last_row[c]
@@ -1737,7 +2073,7 @@ async def api_last():
 async def get_control_state():
     """
     Devuelve el estado actual de los flags de control remoto
-    (pared/colgantes/bomba), que el ESP32 consulta periódicamente.
+    (pared, colgantes, bomba), que el ESP32 consultará periódicamente.
     """
     return CONTROL_STATE
 
@@ -1745,12 +2081,13 @@ async def get_control_state():
 @app.post("/api/control_state")
 async def update_control_state(update: ControlUpdate):
     """
-    Actualiza parcialmente el estado de control remoto. Sólo los campos
-    presentes (no None) son modificados.
+    Actualiza parcialmente el estado de control remoto.
+    Sólo los campos presentes en el body son modificados.
     """
     data = update.dict(exclude_unset=True)
     for k, v in data.items():
         if k in CONTROL_STATE and isinstance(v, bool):
             CONTROL_STATE[k] = v
     return CONTROL_STATE
+
 
